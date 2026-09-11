@@ -1,0 +1,81 @@
+name: issue-82-emotional-flatline-measurement
+
+on:
+  push:
+    branches:
+      - measure/issue-82-emotional-flatline
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      - name: Fetch reproducible corpus
+        run: npm run corpus:fetch
+
+      - name: Verify corpus hashes
+        run: npm run corpus:verify
+
+      - name: Measure document-level discrimination
+        run: node scripts/fp-measure.js --unit document --json > /tmp/document.json
+
+      - name: Measure paragraph-level discrimination
+        run: node scripts/fp-measure.js --unit paragraph --json > /tmp/paragraph.json
+
+      - name: Summarize emotional-flatline
+        run: |
+          node <<'NODE' | tee /tmp/emotional-flatline-summary.txt
+          const fs = require('node:fs');
+
+          function extract(file) {
+            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const row = data.discrimination.find((item) => item.type === 'emotional-flatline');
+            return {
+              unit: data.unit,
+              counts: data.counts,
+              emotionalFlatline: row || {
+                type: 'emotional-flatline',
+                humanRate: 0,
+                machineRate: 0,
+                lift: 0,
+                n: 0,
+              },
+              skipped: data.skipped,
+            };
+          }
+
+          const result = {
+            generatedAt: new Date().toISOString(),
+            document: extract('/tmp/document.json'),
+            paragraph: extract('/tmp/paragraph.json'),
+          };
+
+          console.log(JSON.stringify(result, null, 2));
+          NODE
+
+          {
+            echo "## Issue #82 — emotional-flatline measurement"
+            echo
+            echo '```json'
+            cat /tmp/emotional-flatline-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload measurement evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-82-emotional-flatline-measurement
+          path: |
+            /tmp/document.json
+            /tmp/paragraph.json
+            /tmp/emotional-flatline-summary.txt
+          if-no-files-found: error
