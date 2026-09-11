@@ -70,6 +70,89 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Measure reusable-gate human finding distribution
+        run: |
+          node <<'NODE' | tee /tmp/gate-threshold-distribution.json
+          const AIDetector = require('./detector/patterns.js');
+          const { readManifest, loadRows } = require('./scripts/corpus.js');
+
+          const rows = [];
+          for (const doc of readManifest().documents) {
+            const loaded = loadRows(doc);
+            if (!loaded) continue;
+            for (const row of loaded) {
+              if (row.class !== 'human') continue;
+              const result = AIDetector.analyzeText(row.text, {
+                contextMode: 'technical',
+                sourceMode: 'rendered-markdown',
+              });
+              if (result.tooLong) continue;
+              rows.push({
+                id: row.id,
+                register: row.register,
+                findings: result.issues.length,
+              });
+            }
+          }
+
+          const counts = rows.map((row) => row.findings).sort((a, b) => a - b);
+          const percentile = (p) => {
+            if (!counts.length) return null;
+            const index = Math.ceil(p * counts.length) - 1;
+            return counts[Math.max(0, Math.min(index, counts.length - 1))];
+          };
+          const thresholds = {};
+          const max = counts.length ? counts[counts.length - 1] : 0;
+          for (let threshold = 0; threshold <= max; threshold += 1) {
+            const failures = counts.filter((n) => n > threshold).length;
+            thresholds[threshold] = {
+              failures,
+              rate: counts.length ? failures / counts.length : 0,
+            };
+          }
+
+          const byRegister = {};
+          for (const row of rows) {
+            (byRegister[row.register] ||= []).push(row.findings);
+          }
+          for (const [register, values] of Object.entries(byRegister)) {
+            values.sort((a, b) => a - b);
+            byRegister[register] = {
+              n: values.length,
+              min: values[0],
+              median: values[Math.ceil(0.5 * values.length) - 1],
+              p95: values[Math.ceil(0.95 * values.length) - 1],
+              max: values[values.length - 1],
+            };
+          }
+
+          console.log(JSON.stringify({
+            settings: {
+              contextMode: 'technical',
+              sourceMode: 'rendered-markdown',
+              unit: 'human corpus row/document',
+            },
+            n: counts.length,
+            min: counts[0] ?? null,
+            median: percentile(0.5),
+            p90: percentile(0.9),
+            p95: percentile(0.95),
+            p975: percentile(0.975),
+            p99: percentile(0.99),
+            max,
+            thresholds,
+            byRegister,
+          }, null, 2));
+          NODE
+
+          {
+            echo "## Reusable gate — human finding-count distribution"
+            echo
+            echo '```json'
+            cat /tmp/gate-threshold-distribution.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload measurement evidence
         uses: actions/upload-artifact@v4
         with:
@@ -78,4 +161,5 @@ jobs:
             /tmp/document.json
             /tmp/paragraph.json
             /tmp/emotional-flatline-summary.txt
+            /tmp/gate-threshold-distribution.json
           if-no-files-found: error
